@@ -1,0 +1,6 @@
+{
+    "dataset": "CHBMIT",
+    "datadir": "Dataset",
+    "cachedir": "cachedir-teacher",
+    "resultdir": "teacher-CHBMIT"
+}
