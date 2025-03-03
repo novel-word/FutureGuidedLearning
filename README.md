@@ -1,6 +1,6 @@
 # Future-Guided Learning: A Predictive Approach To Enhance Time-Series Forecasting
 
-![Figure 1](nature-fig_1.pdf)
+![Figure 1](fig_1.png)
 
 **Figure 1:** (A) In the FGL framework, a teacher model operates in the relative future of a student model that focuses on long-term forecasting. After training the teacher on its future-oriented task, both models perform inference during the student’s training phase. The probability distributions from the teacher and student are extracted, and a loss is computed based on Equation 1. (A1) Knowledge distillation transfers information via the Kullback-Leibler (KL) divergence between class distributions. (B) In an event prediction setting, the teacher is trained directly on the events themselves, while the student is trained to forecast these events. Future labels are distilled from the teacher to the student, guiding the student to align more closely with the teacher model’s predictions, despite using data from the relative past. (C) In a regression forecasting scenario, the teacher and student perform short-term and long-term forecasting, respectively. Similar to event prediction, the student gains insights from the teacher during training, enhancing its ability to predict further into the future.
 
