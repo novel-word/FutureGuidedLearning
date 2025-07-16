@@ -142,9 +142,9 @@ class MackeyGlass(Dataset):
 
         return sample, target
 class RNN(nn.Module):
-    def __init__(self, input_size, hidden_size, output_size, num_layers=1):
+    def __init__(self, input_size, hidden_size, output_size, num_layers=2):
         super(RNN, self).__init__()
-        self.rnn = nn.RNN(input_size, hidden_size, num_layers, batch_first=True)
+        self.rnn = nn.RNN(input_size, hidden_size, num_layers, batch_first=True, dropout=0.2)
         self.fc1 = nn.Linear(hidden_size, hidden_size)
         self.fc2 = nn.Linear(hidden_size, output_size)
 
@@ -156,38 +156,67 @@ class RNN(nn.Module):
         out = self.fc2(out)
         return out
 
-def create_time_series_dataset(data, lookback_window, forecasting_horizon, num_bins, test_size, offset=0, MSE=False):
+def create_time_series_dataset(data,
+                               lookback_window,
+                               forecasting_horizon,
+                               num_bins,
+                               test_size,
+                               offset=0,
+                               MSE=False,
+                               batch_size=1):
+    """
+    Generates DataLoaders for teacher/student alignment with configurable offset, window, and batch size.
+
+    Args:
+        data: list of (input_window, target) tuples
+        lookback_window (int): number of past time steps for each input
+        forecasting_horizon (int): steps ahead for student label
+        num_bins (int): number of bins for discretization
+        test_size (float): fraction of data reserved for testing
+        offset (int): shift to align student (t+N) vs teacher (t+1) streams
+        MSE (bool): if True, skip discretization and treat task as regression
+        batch_size (int): batch size for DataLoaders
+
+    Returns:
+        train_loader, test_loader, original_data_test, y_test
+    """
+    # Extract raw series
     x = np.array([point[0] for point in data])
     y = np.array([point[1] for point in data])
-    x_processed = []
-    y_processed = []
-
+    
+    # Slide windows
+    x_processed, y_processed = [], []
     for i in range(len(x) - lookback_window - forecasting_horizon + 1):
-        x_window = x[i:i + lookback_window]
-        y_value = y[i + lookback_window + forecasting_horizon - 1]
+        x_window = x[i : i + lookback_window]
+        y_val = y[i + lookback_window + forecasting_horizon - 1]
         x_processed.append(x_window)
-        y_processed.append(y_value)
-
-    X_train, X_test, y_train, y_test = train_test_split(x_processed, y_processed, test_size=test_size, shuffle=False)
+        y_processed.append(y_val)
+    
+    # Train/test split (no shuffling)
+    X_train, X_test, y_train, y_test = train_test_split(
+        x_processed, y_processed, test_size=test_size, shuffle=False
+    )
     original_data_test = y_test.copy()
-    bin_edges = np.linspace(np.min(y), np.max(y), num_bins - 1)
+    
+    # Discretize if classification
     if not MSE:
+        bin_edges = np.linspace(np.min(y), np.max(y), num_bins - 1)
         X_train = np.digitize(X_train, bin_edges)
-        X_test = np.digitize(X_test, bin_edges)
+        X_test  = np.digitize(X_test, bin_edges)
         y_train = np.digitize(y_train, bin_edges)
-        y_test = np.digitize(y_test, bin_edges)
-
-    train  = [(X_train[i].squeeze(-1), y_train[i]) for i in range(offset, len(X_train))]
-    test = [(X_test[i].squeeze(-1), y_test[i]) for i in range(offset, len(X_test))]
-
+        y_test  = np.digitize(y_test, bin_edges)
+    
+    # Build full lists then apply offset
+    train_full = [(i, X_train[i].squeeze(-1), y_train[i]) for i in range(len(X_train))]
+    test_full  = [(i, X_test[i].squeeze(-1),  y_test[i])  for i in range(len(X_test))]
+    train = train_full[offset:]
+    test  = test_full[offset:]
+    
     # Create DataLoaders
-    train_loader = DataLoader(train, batch_size=1, shuffle=False)
-    test_loader = DataLoader(test, batch_size=1, shuffle=False)
-
+    train_loader = DataLoader(train, batch_size=batch_size, shuffle=False, drop_last=True)
+    test_loader  = DataLoader(test,  batch_size=batch_size, shuffle=False, drop_last=True)
+    
     return train_loader, test_loader, original_data_test, y_test
-
-def KL(outputs, logits, alpha, kl, T):
-    return (1-alpha)*kl(F.log_softmax(outputs / T, dim=1), F.softmax(logits / T, dim=1)) * T**2
 
 def plot_predictions(predictions_teacher, true_values_teacher, predictions_baseline, true_values_baseline, predictions_student, true_values_student, original_data_train, y_train):
     # Configure font
@@ -259,3 +288,13 @@ def plot_predictions(predictions_teacher, true_values_teacher, predictions_basel
 
 # Example usage:
 # plot_predictions(predictions_teacher, true_values_teacher, predictions_baseline, true_values_baseline, predictions_student, true_values_student, original_data_train, y_train)
+def KL(student_logits, teacher_logits, temperature, alpha):
+    """
+    Returns (1–alpha) * T^2 * KL( softmax(teacher/T) ∥ log_softmax(student/T) )
+    """
+    # compute log-probs & soft targets
+    log_p_s = F.log_softmax(student_logits / temperature, dim=1)
+    p_t     = F.softmax(teacher_logits / temperature, dim=1)
+    # batchmean KL and rescale by T^2
+    kd = F.kl_div(log_p_s, p_t, reduction='batchmean') * (temperature ** 2)
+    return (1.0 - alpha) * kd
