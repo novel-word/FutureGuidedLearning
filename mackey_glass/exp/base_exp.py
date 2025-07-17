@@ -33,11 +33,13 @@ class EarlyStopper:
         if self.best_state:
             model.load_state_dict(self.best_state)
 
-def train_student_model(student_horizon, alpha, num_bins, epochs,
+def train_student_model(student_horizon, alpha, num_bins, 
+                        val_size, test_size, epochs,
                         temperature, lookback_window, batch_size,
                         patience=5):
     torch.manual_seed(42)
     print(f"\nTraining | Horizon={student_horizon} Alpha={alpha} "
+          f"Num bins={num_bins} Val size={val_size} Test size={test_size}"
           f"Epochs={epochs} Temp={temperature} "
           f"Lookback={lookback_window} Batch={batch_size}")
 
@@ -52,14 +54,26 @@ def train_student_model(student_horizon, alpha, num_bins, epochs,
         data = pickle.load(f)
 
     # teacher (1-step, offset=H-1)
-    teacher_train, teacher_test, _, _ = create_time_series_dataset(
-        data, lookback_window, 1,
-        num_bins, 0.25, offset=student_horizon-1, batch_size=batch_size
+    teacher_train, teacher_val, teacher_test, _, _ = create_time_series_dataset(
+        data=data, 
+        lookback_window=lookback_window, 
+        forecasting_horizon=1,
+        num_bins=num_bins, 
+        val_size=val_size,
+        test_size=test_size,
+        offset=student_horizon-1, 
+        batch_size=batch_size
     )
     # student (H-step, offset=0)
-    student_train, student_test, _, _ = create_time_series_dataset(
-        data, lookback_window, student_horizon,
-        num_bins, 0.25, offset=0, batch_size=batch_size
+    student_train, student_val, student_test, _, _ = create_time_series_dataset(
+        data=data, 
+        lookback_window=lookback_window, 
+        forecasting_horizon=student_horizon,
+        num_bins=num_bins, 
+        val_size=val_size,
+        test_size=test_size,
+        offset=0, 
+        batch_size=batch_size
     )
 
     mse   = nn.MSELoss()
@@ -82,12 +96,12 @@ def train_student_model(student_horizon, alpha, num_bins, epochs,
         teacher.eval()
         with torch.no_grad():
             val_loss = 0.
-            for _, x, y in teacher_test:
+            for _, x, y in teacher_val:
                 x = x.float().to(device).view(-1,1,lookback_window)
                 y = y.float().to(device).squeeze(-1)
                 pred = teacher(x).argmax(dim=1).float()
                 val_loss += mse(pred, y).item()
-            val_loss /= len(teacher_test)
+            val_loss /= len(teacher_val)
 
         #print(f"[Teacher] Epoch {epoch+1}: Val MSE={val_loss:.4f}")
         if stop_t.step(val_loss, teacher):
@@ -113,12 +127,12 @@ def train_student_model(student_horizon, alpha, num_bins, epochs,
         baseline.eval()
         with torch.no_grad():
             val_loss = 0.
-            for _, x, y in student_test:
+            for _, x, y in student_val:
                 x = x.float().to(device).view(-1,1,lookback_window)
                 y = y.float().to(device).squeeze(-1)
                 pred = baseline(x).argmax(dim=1).float()
                 val_loss += mse(pred, y).item()
-            val_loss /= len(student_test)
+            val_loss /= len(student_val)
 
         #print(f"[Baseline] Epoch {epoch+1}: Val MSE={val_loss:.4f}")
         if stop_b.step(val_loss, baseline):
@@ -150,11 +164,11 @@ def train_student_model(student_horizon, alpha, num_bins, epochs,
         student.eval()
         with torch.no_grad():
             val_loss = 0.
-            for _, x, y in student_test:
+            for _, x, y in student_val:
                 x    = x.float().to(device).view(-1,1,lookback_window)
                 pred = student(x).argmax(dim=1).float()
                 val_loss += mse(pred, y.float().to(device).squeeze(-1)).item()
-            val_loss /= len(student_test)
+            val_loss /= len(student_val)
 
         #print(f"[Student] Epoch {epoch+1}: Val MSE={val_loss:.4f}")
         if stop_s.step(val_loss, student):
@@ -186,15 +200,25 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Future-Guided Learning for Time-Series Forecasting"
     )
-    parser.add_argument("--horizon", type=int, required=True, help="Student horizon (N)")
-    parser.add_argument("--alpha",   type=float, required=True, help="Loss weight α")
-    parser.add_argument("--num_bins",type=int, default=50,   help="Number of bins")
-    parser.add_argument("--epochs",  type=int, default=10,   help="Training epochs")
-    parser.add_argument("--temperature", type=float, default=4)
+    parser.add_argument("--horizon", type=int, required=True, 
+                        help="Student horizon (N)")
+    parser.add_argument("--alpha",   type=float, required=True, 
+                        help="Loss weight α")
+    parser.add_argument("--num_bins",type=int, default=50,   
+                        help="Number of bins")
+    parser.add_argument("--epochs",  type=int, default=10,   
+                        help="Training epochs")
+    parser.add_argument("--temperature", type=float, default=4,
+                        help='Controls softness of teacher logits')
     parser.add_argument("--lookback_window", type=int, default=1,
                         help="Length of history fed to RNN")
     parser.add_argument("--batch_size",      type=int, default=1,
                         help="Batch size for all loaders")
+    parser.add_argument("--val_size",  type=float, default=0.2,
+                        help="Fraction of data for validation")
+    parser.add_argument("--test_size", type=float, default=0.2,
+                        help="Fraction of data for testing")
+
     args = parser.parse_args()
 
     results = train_student_model(
