@@ -156,67 +156,89 @@ class RNN(nn.Module):
         out = self.fc2(out)
         return out
 
+import numpy as np
+from torch.utils.data import DataLoader
+
 def create_time_series_dataset(data,
-                               lookback_window,
-                               forecasting_horizon,
-                               num_bins,
-                               test_size,
-                               offset=0,
-                               MSE=False,
-                               batch_size=1):
+                               lookback_window: int,
+                               forecasting_horizon: int,
+                               num_bins: int,
+                               val_size: float,
+                               test_size: float,
+                               offset: int = 0,
+                               MSE: bool = False,
+                               batch_size: int = 1):
     """
-    Generates DataLoaders for teacher/student alignment with configurable offset, window, and batch size.
+    Generates train/val/test DataLoaders with user-defined fraction splits.
 
     Args:
         data: list of (input_window, target) tuples
-        lookback_window (int): number of past time steps for each input
-        forecasting_horizon (int): steps ahead for student label
+        lookback_window (int): number of past timesteps
+        forecasting_horizon (int): steps ahead for target
         num_bins (int): number of bins for discretization
-        test_size (float): fraction of data reserved for testing
-        offset (int): shift to align student (t+N) vs teacher (t+1) streams
-        MSE (bool): if True, skip discretization and treat task as regression
+        val_size (float): fraction of samples to reserve for validation (e.g. 0.2)
+        test_size (float): fraction of samples to reserve for test (e.g. 0.1)
+        offset (int): shift to align student vs teacher streams
+        MSE (bool): if True, skip discretization (regression)
         batch_size (int): batch size for DataLoaders
 
     Returns:
-        train_loader, test_loader, original_data_test, y_test
+        train_loader, val_loader, test_loader,
+        original_data_val (np.array), original_data_test (np.array)
     """
-    # Extract raw series
-    x = np.array([point[0] for point in data])
-    y = np.array([point[1] for point in data])
-    
-    # Slide windows
-    x_processed, y_processed = [], []
+    # build sliding windows
+    x = np.array([pt[0] for pt in data])
+    y = np.array([pt[1] for pt in data])
+    X_windows, y_windows = [], []
     for i in range(len(x) - lookback_window - forecasting_horizon + 1):
-        x_window = x[i : i + lookback_window]
-        y_val = y[i + lookback_window + forecasting_horizon - 1]
-        x_processed.append(x_window)
-        y_processed.append(y_val)
+        X_windows.append(x[i : i + lookback_window])
+        y_windows.append(y[i + lookback_window + forecasting_horizon - 1])
+
+    X = np.stack(X_windows)
+    y = np.stack(y_windows)
+
+    N = X.shape[0]
+    assert 0 < val_size + test_size < 1, "val_size + test_size must be in (0,1)"
     
-    # Train/test split (no shuffling)
-    X_train, X_test, y_train, y_test = train_test_split(
-        x_processed, y_processed, test_size=test_size, shuffle=False
-    )
+    # compute split indices
+    n_test  = int(N * test_size)
+    n_val   = int(N * val_size)
+    n_train = N - n_val - n_test
+
+    # slice
+    X_train, X_val,   X_test   = X[:n_train], X[n_train:n_train+n_val], X[-n_test:]
+    y_train, y_val,   y_test   = y[:n_train], y[n_train:n_train+n_val], y[-n_test:]
+
+    original_data_val  = y_val.copy()
     original_data_test = y_test.copy()
-    
-    # Discretize if classification
+
+    # discretize if needed
     if not MSE:
-        bin_edges = np.linspace(np.min(y), np.max(y), num_bins - 1)
+        bin_edges = np.linspace(y_train.min(), y_train.max(), num_bins - 1)
         X_train = np.digitize(X_train, bin_edges)
-        X_test  = np.digitize(X_test, bin_edges)
+        X_val   = np.digitize(X_val,   bin_edges)
+        X_test  = np.digitize(X_test,  bin_edges)
         y_train = np.digitize(y_train, bin_edges)
-        y_test  = np.digitize(y_test, bin_edges)
-    
-    # Build full lists then apply offset
-    train_full = [(i, X_train[i].squeeze(-1), y_train[i]) for i in range(len(X_train))]
-    test_full  = [(i, X_test[i].squeeze(-1),  y_test[i])  for i in range(len(X_test))]
-    train = train_full[offset:]
-    test  = test_full[offset:]
-    
-    # Create DataLoaders
-    train_loader = DataLoader(train, batch_size=batch_size, shuffle=False, drop_last=True)
-    test_loader  = DataLoader(test,  batch_size=batch_size, shuffle=False, drop_last=True)
-    
-    return train_loader, test_loader, original_data_test, y_test
+        y_val   = np.digitize(y_val,   bin_edges)
+        y_test  = np.digitize(y_test,  bin_edges)
+
+    # make tuples and apply offset
+    def to_tuples(X_arr, y_arr):
+        tup = [(i, X_arr[i], y_arr[i]) for i in range(len(X_arr))]
+        return tup[offset:] if offset else tup
+
+    train_tuples = to_tuples(X_train, y_train)
+    val_tuples   = to_tuples(X_val,   y_val)
+    test_tuples  = to_tuples(X_test,  y_test)
+
+    # loaders
+    train_loader = DataLoader(train_tuples, batch_size=batch_size, shuffle=False, drop_last=True)
+    val_loader   = DataLoader(val_tuples,   batch_size=batch_size, shuffle=False, drop_last=True)
+    test_loader  = DataLoader(test_tuples,  batch_size=batch_size, shuffle=False, drop_last=True)
+
+    return train_loader, val_loader, test_loader, original_data_val, original_data_test
+'''
+Used to generate figure 4!
 
 def plot_predictions(predictions_teacher, true_values_teacher, predictions_baseline, true_values_baseline, predictions_student, true_values_student, original_data_train, y_train):
     # Configure font
@@ -285,7 +307,7 @@ def plot_predictions(predictions_teacher, true_values_teacher, predictions_basel
     plt.tight_layout(rect=[0, 0.05, 1, 1])  # Adjust rect to fit (a), (b), (c), (d) labels
     plt.savefig('nature-fig_4.pdf', dpi=400)
     plt.show()
-
+'''
 # Example usage:
 # plot_predictions(predictions_teacher, true_values_teacher, predictions_baseline, true_values_baseline, predictions_student, true_values_student, original_data_train, y_train)
 def KL(student_logits, teacher_logits, temperature, alpha):
