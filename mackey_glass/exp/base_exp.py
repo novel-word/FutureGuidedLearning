@@ -191,7 +191,7 @@ def train_student_model(student_horizon, alpha, num_bins,
     Bmse = evaluate(baseline, student_test); print(f"Baseline Test MSE: {Bmse:.4f}")
     Smse = evaluate(student, student_test); print(f"Student Test MSE:  {Smse:.4f}")
 
-    return Bmse, Smse
+    return None
 
 # … rest of your __main__ unchanged …
 
@@ -225,11 +225,10 @@ if __name__ == "__main__":
         student_horizon   = args.horizon,
         alpha             = args.alpha,
         num_bins          = args.num_bins,
+        val_size          = args.val_size,
+        test_size         = args.test_size,
         epochs            = args.epochs,
         temperature       = args.temperature,
         lookback_window   = args.lookback_window,
         batch_size        = args.batch_size
     )
-
-    with open("forecasting_results.txt", "a") as f:
-        f.write(f"Horizon={args.horizon}  Alpha={args.alpha}  Results={results}\n")
