@@ -17,6 +17,71 @@ from utils.save_load import (
 
 # --------------------------- 工具函数 ---------------------------
 
+def make_teacher(mode, teacher_settings, shuffle=False):
+    """
+    生成教师模型所需的 (ictal/interictal) 数据：
+    返回：
+      ictal_data_X, ictal_data_y, interictal_data_X, interictal_data_y
+    其中：
+      - ictal_data_X / ictal_data_y 是按“发作段/正样本”分组后的列表
+      - interictal_data_X / interictal_data_y 是负样本（整合为一个 X,y）
+    """
+    import random
+
+    def shuffle_lists(list1, list2):
+        combined = list(zip(list1, list2))
+        random.shuffle(combined)
+        a, b = zip(*combined)
+        return list(a), list(b)
+
+    dog_targets   = ['Dog_1', 'Dog_2', 'Dog_3', 'Dog_4']
+    human_targets = ['Patient_3', 'Patient_5', 'Patient_6', 'Patient_7']
+
+    ictal_data_X, ictal_data_y = [], []
+    interictal_data_X, interictal_data_y = [], []
+
+    if mode == 'Dog':
+        freq = 200
+        targets = dog_targets
+        teacher_channels = None
+    elif mode == 'Patient_1':
+        # Kaggle 人类数据，采样率 1000Hz，教师模型用较少通道
+        freq = 1000
+        targets = human_targets
+        teacher_channels = 15
+    else:
+        # Patient_2 模式：同样 1000Hz，但用更多通道
+        freq = 1000
+        targets = human_targets
+        teacher_channels = 24
+
+    for target in targets:
+        ictal_X, ictal_y = PrepDataTeacher(
+            target, type='ictal',
+            settings=teacher_settings, freq=freq,
+            teacher_channels=teacher_channels
+        ).apply()
+
+        interictal_X, interictal_y = PrepDataTeacher(
+            target, type='interictal',
+            settings=teacher_settings, freq=freq,
+            teacher_channels=teacher_channels
+        ).apply()
+
+        # 发作段（正样本）按段追加（Xg/yg 是 list）
+        ictal_data_X.extend(ictal_X)
+        ictal_data_y.extend(ictal_y)
+
+        # 负样本通常是一个整体 X,y；为了与旧接口兼容，按“每个 target 追加一对”
+        interictal_data_X.append(interictal_X)
+        interictal_data_y.append(interictal_y)
+
+    if shuffle:
+        ictal_data_X, ictal_data_y = shuffle_lists(ictal_data_X, ictal_data_y)
+
+    return ictal_data_X, ictal_data_y, interictal_data_X, interictal_data_y
+
+
 def makedirs(dir_path: str):
     try:
         os.makedirs(dir_path, exist_ok=True)
