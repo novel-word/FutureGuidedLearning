@@ -6,6 +6,12 @@ import numpy as np
 import pandas as pd
 from scipy.io import loadmat
 from scipy.signal import resample
+
+# ---- NumPy 2.x 兼容垫片：为依赖旧别名的库恢复 numpy.lib.pad ----
+if not hasattr(np.lib, "pad"):
+    np.lib.pad = np.pad
+
+
 import stft
 
 from utils.group_seizure_teacher import group_seizure
