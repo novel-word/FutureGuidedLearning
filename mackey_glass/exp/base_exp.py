@@ -5,7 +5,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from tqdm import tqdm
-from utils import MackeyGlass, RNN, create_time_series_dataset, plot_predictions, KL
+# from utils import MackeyGlass, RNN, create_time_series_dataset, plot_predictions, KL
+from utils.utils import MackeyGlass, RNN, create_time_series_dataset, plot_predictions, KL
 
 # Check for GPU
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
