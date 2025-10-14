@@ -135,14 +135,23 @@ def train_student_model(student_horizon, alpha, num_bins, val_size, test_size,
         data = pickle.load(f)
 
     # prepare datasets
+    # teacher_train, teacher_val, teacher_test, _, _ = create_time_series_dataset(
+    #     data, lookback_window, 1,
+    #     num_bins, 0.25, offset=student_horizon-1, batch_size=batch_size
+    # )
+    # student_train, student_val, student_test, _, _ = create_time_series_dataset(
+    #     data, lookback_window, student_horizon,
+    #     num_bins, 0.25, offset=0, batch_size=batch_size
+    # )
+    # 原来（缺 test_size）
     teacher_train, teacher_val, teacher_test, _, _ = create_time_series_dataset(
-        data, lookback_window, 1,
-        num_bins, 0.25, offset=student_horizon-1, batch_size=batch_size
-    )
+    data, lookback_window, 1, num_bins, val_size, test_size,
+    offset=student_horizon-1, batch_size=batch_size
+)
     student_train, student_val, student_test, _, _ = create_time_series_dataset(
-        data, lookback_window, student_horizon,
-        num_bins, 0.25, offset=0, batch_size=batch_size
-    )
+    data, lookback_window, student_horizon, num_bins, val_size, test_size,
+    offset=0, batch_size=batch_size
+)
 
     mse    = nn.MSELoss()
     celoss = nn.CrossEntropyLoss()
