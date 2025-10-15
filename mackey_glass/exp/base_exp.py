@@ -40,115 +40,99 @@ def gather_and_save_predictions(
     loader,
     lookback_window,
     bin_edges=None,
-    outdir="outputs"
+    outdir="outputs",
+    original_y=None,  # 新增：该 split 的连续真值数组（未离散化）
 ):
     """
-    收集一个数据划分(split)上的预测与真实值，并保存到 CSV。
-
     导出的列：
-      - index:       样本原始索引（DataLoader 返回的第一个元素）
-      - y_true:      真实类别索引（离散）
-      - y_pred:      预测类别索引（离散，argmax）
-      - confidence:  预测类别的 softmax 概率
-      - y_true_cont: 真实值的连续近似（其所在区间的中心）
-      - y_pred_cont: 预测值的连续近似（预测区间的中心）
-
-    参数：
-      name:            文件名前缀，例如 'student_test'
-      model:           要评估的模型
-      loader:          对应划分的 DataLoader，迭代产出 (idx, x, y)
-      lookback_window: RNN 期望的历史长度，用于 reshape
-      bin_edges:       分箱边界（长度 = num_bins-1 或 num_bins+1，与你的实现一致）
-      outdir:          输出目录
+      - index:            样本原始索引（split 内）
+      - y_true:           真实类别索引（离散）
+      - y_pred:           预测类别索引（离散，argmax）
+      - confidence:       预测类别的 softmax 概率（max 概率）
+      - y_true_cont:      真实值的连续近似（其所在区间中心）
+      - y_pred_cont:      预测值的连续近似（argmax 对应中心）
+      - y_pred_soft_cont: 概率对中心加权的连续近似（∑ p_k * center_k）
+      - y_true_raw:       ✅ 原始连续真值（未离散化）
     """
-    import os
-    from pathlib import Path
     import numpy as np
     import pandas as pd
     import torch
     import torch.nn.functional as F
+    from pathlib import Path
 
     model.eval()
     device = next(model.parameters()).device
     rows = []
-
     Path(outdir).mkdir(parents=True, exist_ok=True)
 
-    # 若提供了 bin_edges，计算区间中心；并做一次性缓存
+    # 准备区间中心（与你现有逻辑一致）
     centers = None
     if bin_edges is not None:
         bin_edges = np.asarray(bin_edges)
-        # 兼容 np.linspace 产生的 (num_bins-1) 边界或 (num_bins+1) 边界两种写法
-        if len(bin_edges) >= 2:
-            # 若是 (num_bins-1) 边界（不含两端），需要补上下界；用端点外推一点点
-            if len(bin_edges.shape) == 1 and (np.diff(bin_edges) > 0).all():
-                # 简单鲁棒补边（只在像 utils 中那样给出 num_bins-1 时触发）
-                if len(bin_edges) == 0:
-                    centers = None
-                elif len(bin_edges) >= 2 and (np.isfinite(bin_edges).all()):
-                    # 补上下界：用首/尾间距外推
-                    d_lo  = bin_edges[1] - bin_edges[0]
-                    d_hi  = bin_edges[-1] - bin_edges[-2]
-                    full_edges = np.concatenate([
-                        [bin_edges[0] - d_lo],
-                        bin_edges,
-                        [bin_edges[-1] + d_hi]
-                    ])
-                    centers = 0.5 * (full_edges[:-1] + full_edges[1:])
-                else:
-                    centers = None
-            # 若本来就是 (num_bins+1) 个边界，直接取中心
-            if centers is None and len(bin_edges) >= 2:
-                centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
+        if bin_edges.ndim == 1 and len(bin_edges) >= 2:
+            centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
 
     with torch.no_grad():
         for idx, x, y in loader:
-            # x: [B, lookback] -> [B, 1, lookback]
             x = x.float().to(device).view(-1, 1, lookback_window)
 
-            logits = model(x)                    # [B, num_bins]
-            probs  = F.softmax(logits, dim=1)    # [B, num_bins]
-            preds  = probs.argmax(dim=1)         # [B]
-            conf   = probs.max(dim=1).values     # [B]
+            logits = model(x)
+            probs  = F.softmax(logits, dim=1)
+            preds  = probs.argmax(dim=1)
+            conf   = probs.max(dim=1).values
 
-            # 整理为 CPU numpy
             preds_np = preds.cpu().numpy()
             conf_np  = conf.cpu().numpy()
+            probs_np = probs.cpu().numpy()
 
-            # y 的形状通常是 [B, 1] 或 [B]，这里统一 squeeze
+            # y -> numpy（离散标签）
             if isinstance(y, torch.Tensor):
                 y_np = y.squeeze(-1).cpu().numpy()
             else:
                 y_np = np.asarray(y).squeeze()
 
-            # 处理 idx：可能是 tensor/list/ndarray
+            # idx -> numpy（split 内索引）
             if isinstance(idx, torch.Tensor):
                 idx_np = idx.cpu().numpy()
             else:
                 idx_np = np.asarray(idx)
 
-            # 连续值映射（若 centers 有效）
+            # 连续近似（中心映射）
             if centers is not None:
-                # 为防止极端越界，做一下 clip
                 max_c = len(centers) - 1
                 y_clipped     = np.clip(y_np,     0, max_c).astype(int)
                 preds_clipped = np.clip(preds_np, 0, max_c).astype(int)
                 y_true_cont   = centers[y_clipped]
                 y_pred_cont   = centers[preds_clipped]
-            else:
-                # 若没有 bin_edges，则用离散索引本身占位
-                y_true_cont = y_np.astype(float)
-                y_pred_cont = preds_np.astype(float)
 
-            # 逐条写入
+                if probs_np.shape[1] == len(centers):
+                    y_pred_soft_cont = (probs_np * centers[np.newaxis, :]).sum(axis=1)
+                else:
+                    y_pred_soft_cont = y_pred_cont.copy()
+            else:
+                y_true_cont      = y_np.astype(float)
+                y_pred_cont      = preds_np.astype(float)
+                y_pred_soft_cont = y_pred_cont.copy()
+
+            # ✅ 原始连续真值（如果提供了 original_y，就用 index 从中取）
+            if original_y is not None:
+                original_y = np.asarray(original_y)
+                # 注意：teacher 有 offset 时，idx 从 offset 开始，这里直接用 idx_np[i] 取就对齐
+                y_true_raw_arr = original_y[idx_np.astype(int)]
+            else:
+                # 没有提供就先用 y_true_cont 占位
+                y_true_raw_arr = y_true_cont
+
             for i in range(len(preds_np)):
                 rows.append({
-                    "index":       int(idx_np[i]),
-                    "y_true":      int(y_np[i]),
-                    "y_pred":      int(preds_np[i]),
-                    "confidence":  float(conf_np[i]),
-                    "y_true_cont": float(y_true_cont[i]),
-                    "y_pred_cont": float(y_pred_cont[i]),
+                    "index":            int(idx_np[i]),
+                    "y_true":           int(y_np[i]),
+                    "y_pred":           int(preds_np[i]),
+                    "confidence":       float(conf_np[i]),
+                    "y_true_cont":      float(y_true_cont[i]),
+                    "y_pred_cont":      float(y_pred_cont[i]),
+                    "y_pred_soft_cont": float(y_pred_soft_cont[i]),
+                    "y_true_raw":       float(y_true_raw_arr[i]),  # ✅ 真正连续真值
                 })
 
     df = pd.DataFrame(rows).sort_values("index").reset_index(drop=True)
@@ -156,6 +140,7 @@ def gather_and_save_predictions(
     df.to_csv(out_path, index=False)
     print(f"[Saved] {out_path}")
     return df
+
 
 
 def train_student_model(student_horizon, alpha, num_bins, 
@@ -179,7 +164,7 @@ def train_student_model(student_horizon, alpha, num_bins,
         data = pickle.load(f)
 
     # teacher (1-step, offset=H-1)
-    teacher_train, teacher_val, teacher_test, _, _, bin_edges_teacher = create_time_series_dataset(
+    teacher_train, teacher_val, teacher_test, orig_val_t, orig_test_t, bin_edges_teacher, orig_train_t = create_time_series_dataset(
         data=data, 
         lookback_window=lookback_window, 
         forecasting_horizon=1,
@@ -190,7 +175,7 @@ def train_student_model(student_horizon, alpha, num_bins,
         batch_size=batch_size
     )
     # student (H-step, offset=0)
-    student_train, student_val, student_test, _, _, bin_edges_student = create_time_series_dataset(
+    student_train, student_val, student_test, orig_val_s, orig_test_s, bin_edges_student, orig_train_s = create_time_series_dataset(
         data=data, 
         lookback_window=lookback_window, 
         forecasting_horizon=student_horizon,
@@ -322,82 +307,30 @@ def train_student_model(student_horizon, alpha, num_bins,
     outdir = "outputs"
     Path(outdir).mkdir(parents=True, exist_ok=True)
 
-    # Teacher 使用 teacher_* 的 loader + bin_edges_teacher
-    gather_and_save_predictions(
-        name="teacher_train",
-        model=teacher,
-        loader=teacher_train,
-        lookback_window=lookback_window,
-        bin_edges=bin_edges_teacher,
-        outdir=outdir
-    )
-    gather_and_save_predictions(
-        name="teacher_val",
-        model=teacher,
-        loader=teacher_val,
-        lookback_window=lookback_window,
-        bin_edges=bin_edges_teacher,
-        outdir=outdir
-    )
-    gather_and_save_predictions(
-        name="teacher_test",
-        model=teacher,
-        loader=teacher_test,
-        lookback_window=lookback_window,
-        bin_edges=bin_edges_teacher,
-        outdir=outdir
-    )
+   # Teacher
+    gather_and_save_predictions("teacher_train", teacher, teacher_train, lookback_window,
+                                bin_edges_teacher, original_y=orig_train_t)
+    gather_and_save_predictions("teacher_val",   teacher, teacher_val,   lookback_window,
+                                bin_edges_teacher, original_y=orig_val_t)
+    gather_and_save_predictions("teacher_test",  teacher, teacher_test,  lookback_window,
+                                bin_edges_teacher, original_y=orig_test_t)
+    
+    # Baseline
+    gather_and_save_predictions("baseline_train", baseline, student_train, lookback_window,
+                                bin_edges_student, original_y=orig_train_s)
+    gather_and_save_predictions("baseline_val",   baseline, student_val,   lookback_window,
+                                bin_edges_student, original_y=orig_val_s)
+    gather_and_save_predictions("baseline_test",  baseline, student_test,  lookback_window,
+                                bin_edges_student, original_y=orig_test_s)
+    
+    # Student
+    gather_and_save_predictions("student_train", student, student_train, lookback_window,
+                                bin_edges_student, original_y=orig_train_s)
+    gather_and_save_predictions("student_val",   student, student_val,   lookback_window,
+                                bin_edges_student, original_y=orig_val_s)
+    gather_and_save_predictions("student_test",  student, student_test,  lookback_window,
+                                bin_edges_student, original_y=orig_test_s)
 
-    # Baseline 与 Student 共用 student_* 的 loader；分箱与任务一致，传 bin_edges_student
-    gather_and_save_predictions(
-        name="baseline_train",
-        model=baseline,
-        loader=student_train,
-        lookback_window=lookback_window,
-        bin_edges=bin_edges_student,
-        outdir=outdir
-    )
-    gather_and_save_predictions(
-        name="baseline_val",
-        model=baseline,
-        loader=student_val,
-        lookback_window=lookback_window,
-        bin_edges=bin_edges_student,
-        outdir=outdir
-    )
-    gather_and_save_predictions(
-        name="baseline_test",
-        model=baseline,
-        loader=student_test,
-        lookback_window=lookback_window,
-        bin_edges=bin_edges_student,
-        outdir=outdir
-    )
-
-    gather_and_save_predictions(
-        name="student_train",
-        model=student,
-        loader=student_train,
-        lookback_window=lookback_window,
-        bin_edges=bin_edges_student,
-        outdir=outdir
-    )
-    gather_and_save_predictions(
-        name="student_val",
-        model=student,
-        loader=student_val,
-        lookback_window=lookback_window,
-        bin_edges=bin_edges_student,
-        outdir=outdir
-    )
-    gather_and_save_predictions(
-        name="student_test",
-        model=student,
-        loader=student_test,
-        lookback_window=lookback_window,
-        bin_edges=bin_edges_student,
-        outdir=outdir
-    )
                             
     return None
 
