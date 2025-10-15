@@ -236,7 +236,8 @@ def create_time_series_dataset(data,
     val_loader   = DataLoader(val_tuples,   batch_size=batch_size, shuffle=False, drop_last=True)
     test_loader  = DataLoader(test_tuples,  batch_size=batch_size, shuffle=False, drop_last=True)
 
-    return train_loader, val_loader, test_loader, original_data_val, original_data_test
+    # 🚩 返回 bin_edges，如果未离散化则返回 None
+    return train_loader, val_loader, test_loader, original_data_val, original_data_test, (bin_edges if not MSE else None)
 '''
 Used to generate figure 4!
 
