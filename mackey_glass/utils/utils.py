@@ -209,6 +209,7 @@ def create_time_series_dataset(data,
     X_train, X_val,   X_test   = X[:n_train], X[n_train:n_train+n_val], X[-n_test:]
     y_train, y_val,   y_test   = y[:n_train], y[n_train:n_train+n_val], y[-n_test:]
 
+    original_data_train = y_train.copy()
     original_data_val  = y_val.copy()
     original_data_test = y_test.copy()
 
@@ -237,7 +238,15 @@ def create_time_series_dataset(data,
     test_loader  = DataLoader(test_tuples,  batch_size=batch_size, shuffle=False, drop_last=True)
 
     # 🚩 返回 bin_edges，如果未离散化则返回 None
-    return train_loader, val_loader, test_loader, original_data_val, original_data_test, (bin_edges if not MSE else None)
+    return (
+    train_loader,
+    val_loader,
+    test_loader,
+    original_data_val,
+    original_data_test,
+    bin_edges if not MSE else None,
+    original_data_train,
+)
 '''
 Used to generate figure 4!
 
